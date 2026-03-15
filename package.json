@@ -1,0 +1,17 @@
+{
+  "name": "m3u8-proxy",
+  "version": "1.0.0",
+  "description": "Universal M3U8/HLS proxy server for all stream types",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express-rate-limit": "^7.5.0"
+  }
+}

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>M3U8 Proxy Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+        }
+
+        video {
+            width: 100%;
+            max-width: 800px;
+            background: #000;
+        }
+
+        .log {
+            background: #0d0d1a;
+            padding: 10px;
+            margin-top: 10px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            border-radius: 6px;
+        }
+
+        .log .error {
+            color: #ff6b6b;
+        }
+
+        .log .info {
+            color: #69db7c;
+        }
+
+        .log .warn {
+            color: #ffd43b;
+        }
+
+        input {
+            width: 100%;
+            max-width: 780px;
+            padding: 8px;
+            margin: 8px 0;
+            border-radius: 4px;
+            border: 1px solid #333;
+            background: #16213e;
+            color: #eee;
+        }
+
+        button {
+            padding: 8px 20px;
+            border-radius: 4px;
+            border: none;
+            background: #e94560;
+            color: white;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>M3U8 Proxy Test Player</h2>
+    <div>
+        <label>Proxy M3U8 URL:</label>
+        <input id="url" type="text" value="" placeholder="http://localhost:3500/proxy/m3u8?url=...&referer=..." />
+        <br>
+        <button onclick="loadStream()">Play</button>
+        <button onclick="document.getElementById('log').innerHTML=''">Clear Log</button>
+    </div>
+    <br>
+    <video id="video" controls></video>
+    <div class="log" id="log"></div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.className = type;
+            div.textContent = `[${new Date().toISOString().split('T')[1].slice(0, 12)}] ${msg}`;
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(`[${type}]`, msg);
+        }
+
+        let currentHls = null;
+
+        function loadStream() {
+            const video = document.getElementById('video');
+            const url = document.getElementById('url').value;
+
+            if (!url) { log('Enter a URL first', 'error'); return; }
+
+            // Destroy previous instance
+            if (currentHls) {
+                currentHls.destroy();
+                currentHls = null;
+            }
+
+            if (Hls.isSupported()) {
+                log('HLS.js version: ' + Hls.version, 'info');
+
+                const hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    // Lower-level buffer settings to help with codec issues
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 60,
+                });
+                currentHls = hls;
+
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    let msg = `HLS ERROR: type=${data.type} details=${data.details} fatal=${data.fatal}`;
+                    if (data.reason) msg += ` reason="${data.reason}"`;
+                    if (data.err) msg += ` err="${data.err.message || data.err}"`;
+                    if (data.response) {
+                        msg += ` response.code=${data.response.code}`;
+                    }
+                    if (data.url) msg += ` url=${data.url}`;
+                    if (data.frag) msg += ` frag=${data.frag.sn}`;
+                    log(msg, 'error');
+
+                    if (data.fatal) {
+                        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                            log('Attempting recoverMediaError...', 'warn');
+                            hls.recoverMediaError();
+                        } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                            log('Attempting startLoad...', 'warn');
+                            hls.startLoad();
+                        }
+                    }
+                });
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function (e, data) {
+                    log(`Manifest parsed: ${data.levels.length} level(s)`, 'info');
+                    if (data.levels[0]) {
+                        const l = data.levels[0];
+                        log(`  Level 0: ${l.width}x${l.height} codecs="${l.codecSet || l.attrs?.CODECS || 'none'}"`, 'info');
+                    }
+                    video.play().catch(e => log('Autoplay blocked: ' + e.message, 'warn'));
+                });
+
+                hls.on(Hls.Events.KEY_LOADED, function (e, data) {
+                    log('AES-128 key loaded (' + (data.frag ? 'frag ' + data.frag.sn : '') + ')', 'info');
+                });
+
+                hls.on(Hls.Events.FRAG_LOADED, function (e, data) {
+                    const sz = data.frag.stats?.total || 0;
+                    log(`Fragment ${data.frag.sn} loaded (${(sz / 1024).toFixed(1)} KB)`, 'info');
+                });
+
+                hls.on(Hls.Events.FRAG_DECRYPTED, function (e, data) {
+                    log(`Fragment ${data.frag.sn} decrypted`, 'info');
+                });
+
+                hls.on(Hls.Events.FRAG_PARSING_INIT_SEGMENT, function (e, data) {
+                    log(`Init segment parsed: video=${data.tracks?.video?.codec || 'none'} audio=${data.tracks?.audio?.codec || 'none'}`, 'info');
+                });
+
+                hls.on(Hls.Events.FRAG_PARSED, function (e, data) {
+                    log(`Fragment ${data.frag.sn} parsed successfully`, 'info');
+                });
+
+                hls.on(Hls.Events.BUFFER_CODECS, function (e, data) {
+                    log(`Buffer codecs: ${JSON.stringify(Object.keys(data))} video=${data.video?.codec} audio=${data.audio?.codec}`, 'info');
+                });
+
+                hls.on(Hls.Events.BUFFER_CREATED, function (e, data) {
+                    log(`Buffer created: ${JSON.stringify(Object.keys(data.tracks))}`, 'info');
+                });
+
+                hls.on(Hls.Events.MEDIA_ATTACHED, function () {
+                    log('Media attached', 'info');
+                });
+
+                hls.loadSource(url);
+                hls.attachMedia(video);
+                log('Loading: ' + url, 'info');
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = url;
+                log('Using native HLS', 'info');
+            } else {
+                log('HLS not supported in this browser', 'error');
+            }
+        }
+
+        // Pre-fill with test URL
+        const testM3u8 = encodeURIComponent('https://vault-99.owocdn.top/stream/99/02/2a68c81be71f0ff24c35b0bb444be00bc7a149cd42c9c433770d5b5308d28316/uwu.m3u8');
+        const testReferer = encodeURIComponent('https://kwik.cx/');
+        document.getElementById('url').value = `http://localhost:3500/proxy/m3u8?url=${testM3u8}&referer=${testReferer}`;
+    </script>
+</body>
+
+</html>
