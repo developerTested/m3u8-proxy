@@ -1,3 +1,4 @@
+require("dotenv").config();
 const axios = require("axios");
 const ApiError = require("./ApiError")
 
@@ -10,13 +11,13 @@ const ApiError = require("./ApiError")
  */
 function handleApiError(res, error, message) {
 
-    console.log(error);
-
     console.error(message + ":", error instanceof Error ? error.message : error);
 
     const apiError = new ApiError(500, message);
     return res.status(500).json(apiError);
 }
+
+const ROOT_URL = process.env.ROOT_URL || `http://localhost:${process.env.PORT || 3001}`
 
 /**
  * Shared Axios instance used for all upstream fetches.
@@ -268,7 +269,7 @@ class ProxyController {
  * Returns the decoded string or null.
  */
     extractReferer(req) {
-        const raw = req.query.referer;
+        const raw = req.query?.referer;
         if (!raw) return null;
         try {
             return decodeURIComponent(raw);
@@ -287,13 +288,13 @@ class ProxyController {
         try {
             const domain = new URL(url).hostname;
             return this.refererStore.get(domain);
-        } catch (error) {
+        } catch (err) {
             return null;
         }
     }
 
 
-    async processPlaylist(content, targetUrl, referer, direct = 1) {
+    async processPlaylist(content, targetUrl, referer) {
         let lines = content.split('\n');
         const processedLines = [];
 
@@ -320,7 +321,7 @@ class ProxyController {
                         : new URL(keyUri, targetUrl).href;
 
                     const encodedKey = encodeURIComponent(absoluteKeyUrl);
-                    const newLine = line.replace(/URI="[^"]+"/, `URI="/proxy/key?url=${encodedKey}${refSuffix}"`);
+                    const newLine = line.replace(/URI="[^"]+"/, `URI="${ROOT_URL}/proxy/key?url=${encodedKey}${refSuffix}"`);
                     processedLines.push(newLine);
                 } else {
                     processedLines.push(line);
@@ -335,10 +336,10 @@ class ProxyController {
 
                     // Check if it's a playlist or segment
                     if (absoluteUrl.includes('.m3u8')) {
-                        processedLines.push(`/proxy/m3u8?url=${encodeURIComponent(absoluteUrl)}${refSuffix}&_direct=1`);
+                        processedLines.push(`${ROOT_URL}/proxy/m3u8?url=${encodeURIComponent(absoluteUrl)}${refSuffix}&_direct=1`);
                     } else {
                         // For segments, use the /proxy/segment endpoint
-                        processedLines.push(`/proxy/segment?url=${encodeURIComponent(absoluteUrl)}${refSuffix}`);
+                        processedLines.push(`${ROOT_URL}/proxy/segment?url=${encodeURIComponent(absoluteUrl)}${refSuffix}`);
                     }
                 } catch (e) {
                     processedLines.push(line);
@@ -477,7 +478,7 @@ class ProxyController {
                     const refSuffix = referer
                         ? `&referer=${encodeURIComponent(referer)}`
                         : "";
-                    const mediaUrl = `/proxy/m3u8?url=${encodeURIComponent(targetUrl)}${refSuffix}&_direct=1`;
+                    const mediaUrl = `${ROOT_URL}/proxy/m3u8?url=${encodeURIComponent(targetUrl)}${refSuffix}&_direct=1`;
                     const processedContent = [
                         "#EXTM3U",
                         '#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS="avc1.640028,mp4a.40.2"',
@@ -493,7 +494,7 @@ class ProxyController {
                     return res.send(processedContent);
                 }
 
-                const processedContent = await this.processPlaylist(content, targetUrl, referer, isDirect);
+                const processedContent = await this.processPlaylist(content, targetUrl, referer);
 
                 // Log the codec change
                 if (content.includes('mp4a.40.1')) {
@@ -554,13 +555,7 @@ class ProxyController {
 
             res.send(data);
 
-        } catch (error) {
-            console.error(`❌ Error:`, error.message, error);
-
-            if (error.response?.status === 416) {
-                return res.status(416).end();
-            }
-
+        } catch (err) {
             return handleApiError(res, err, "Something went wrong while fetching handle request");
         }
     }
@@ -586,12 +581,12 @@ class ProxyController {
             });
 
             const parsedUrl = new URL(targetUrl);
-            const referer = this.getReferer(targetUrl) || parsedUrl.origin;
+            const referer = this.extractReferer(req) || parsedUrl.origin;
 
             // Check if it's a range request (partial content)
             const isRangeRequest = !!req.headers.range;
 
-            const upstream = await fetchUpstream(targetUrl, {
+                        const upstream = await fetchUpstream(targetUrl, {
                 ...req.headers,
                 range: req.headers.range // Forward range header
             }, referer);
@@ -603,9 +598,7 @@ class ProxyController {
 
             if (upstream.status >= 400) {
                 this.setCorsHeaders(res);
-                return res.status(upstream.status).json({
-                    error: `Upstream returned ${upstream.status}`
-                });
+                return handleApiError(res, upstream, `Upstream returned ${upstream.status}`)
             }
 
             const upstreamCt = (upstream.headers["content-type"] || "").toLowerCase();
@@ -656,7 +649,7 @@ class ProxyController {
 
         } catch (err) {
             console.error("❌ Segment error:", err);
-            return handleApiError(res, err, "Something went wrong with segments");
+            return handleApiError(res, err, "Something went wrong while segments");
         }
     }
 
@@ -675,7 +668,7 @@ class ProxyController {
             console.log(`[${new Date().toISOString()}] 🔑 Key: ${targetUrl}`);
 
             const parsedUrl = new URL(targetUrl);
-            const referer = this.getReferer(targetUrl) || parsedUrl.origin;
+            const referer = this.extractReferer(req) || parsedUrl.origin;
 
             const upstream = await fetchUpstream(targetUrl, req.headers, referer);
 
@@ -692,8 +685,8 @@ class ProxyController {
             });
             res.send(upstream.data);
 
-        } catch (error) {
-            console.error('❌ Key error:', error.message);
+        } catch (err) {
+            console.error('❌ Key error:', err.message);
             return handleApiError(res, err, "Something went wrong while fetching key");
         }
     };
@@ -740,7 +733,6 @@ class ProxyController {
             res.send(upstream.data);
 
         } catch (err) {
-
             return handleApiError(res, err, "Something went wrong while fetching subtitle");
         }
     }
@@ -772,7 +764,7 @@ class ProxyController {
             const ct = (upstream.headers["content-type"] || "").toLowerCase();
             if (ct.includes("mpegurl") || /\.m3u8?(\?|$)/i.test(url)) {
                 const bodyText = upstream.data.toString("utf-8");
-                const rewritten = this.processPlaylist(bodyText, url, referer);
+                const rewritten = this.processPlaylist(bodyText, url, referer, rootUrl);
                 this.setCorsHeaders(res);
                 res.set({
                     "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
@@ -792,7 +784,6 @@ class ProxyController {
 
 
         } catch (err) {
-
             return handleApiError(res, err, "Something went wrong while fetching audio");
         }
     }
